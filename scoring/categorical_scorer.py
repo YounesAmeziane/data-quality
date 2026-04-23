@@ -1,26 +1,23 @@
 from __future__ import annotations
 
+from scoring.null_handler import score_null
 from scoring.utils import clamp
 
 
 def score_categorical(value, profile):
+    null_result = score_null(value, profile)
+    if null_result is not None:
+        return null_result
+
     reasons = []
     features = {}
     score = 0.0
-
-    if value is None:
-        return {
-            "score": 0.1,
-            "reasons": ["null"],
-            "features": {},
-        }
 
     value = str(value)
     freq_map = profile.get("top_values", {})
     distinct_ratio = float(profile.get("distinct_ratio", 1.0))
     distinct_count = int(profile.get("distinct_count", 0))
 
-    # High-cardinality categorical columns should be penalized less
     high_cardinality = distinct_ratio > 0.2 or distinct_count > 100
 
     if value not in freq_map:

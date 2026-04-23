@@ -20,7 +20,7 @@ def infer_logical_type(series: pd.Series, column_name: str) -> str:
         return "datetime"
 
     if any(token in col for token in ["date", "time", "timestamp"]):
-        parsed_dt = pd.to_datetime(non_null, errors="coerce")
+        parsed_dt = pd.to_datetime(non_null, errors="coerce", format="mixed")
         if parsed_dt.notna().mean() > 0.9:
             return "datetime"
 

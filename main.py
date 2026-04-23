@@ -10,6 +10,8 @@ from profiling.profiler import profile_table, save_profiles_to_json
 from profiling.db import read_table_sample
 from scanning.table_scanner import scan_table, save_scan_results
 
+from profiling.db import get_database_list, list_user_tables, read_table_sample, get_table_column_metadata
+
 
 load_dotenv()
 
@@ -44,11 +46,18 @@ def run_profile_mode():
                     print("  -> skipped (empty sample)")
                     continue
 
+                table_metadata = get_table_column_metadata(
+                    database=database_name,
+                    schema_name=schema_name,
+                    table_name=table_name,
+                )
+
                 profiles = profile_table(
                     df=df,
                     database_name=database_name,
                     schema_name=schema_name,
                     table_name=table_name,
+                    table_metadata=table_metadata,
                 )
 
                 output_path = save_profiles_to_json(

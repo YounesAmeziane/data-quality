@@ -22,28 +22,60 @@ class ColumnProfile:
     profile: dict
 
 
-def profile_numeric(series: pd.Series) -> dict:
+def _build_null_metadata(series: pd.Series, column_metadata: dict | None) -> dict:
+    null_rate = float(series.isna().mean())
+    non_null_rate = float(series.notna().mean())
+
+    db_is_nullable = None
+    db_data_type = None
+    db_max_length = None
+    db_precision = None
+    db_scale = None
+
+    if column_metadata:
+        db_is_nullable = column_metadata.get("db_is_nullable")
+        db_data_type = column_metadata.get("db_data_type")
+        db_max_length = column_metadata.get("db_max_length")
+        db_precision = column_metadata.get("db_precision")
+        db_scale = column_metadata.get("db_scale")
+
+    # Source of truth: SQL nullability if available
+    if db_is_nullable is None:
+        null_allowed = bool(null_rate > 0)
+    else:
+        null_allowed = bool(db_is_nullable)
+
+    return {
+        "null_rate": null_rate,
+        "non_null_rate": non_null_rate,
+        "null_allowed": null_allowed,
+        "db_is_nullable": db_is_nullable,
+        "db_data_type": db_data_type,
+        "db_max_length": db_max_length,
+        "db_precision": db_precision,
+        "db_scale": db_scale,
+    }
+
+
+def profile_numeric(series: pd.Series, column_metadata: dict | None = None) -> dict:
     parsed = pd.to_numeric(series, errors="coerce")
     valid = parsed.dropna()
 
     base = {
+        "logical_type": "numeric",
         "row_count": int(len(series)),
-        "null_rate": float(series.isna().mean()),
         "parse_success_rate": float(parsed.notna().mean()),
+        **_build_null_metadata(series, column_metadata),
     }
 
     if valid.empty:
-        return {
-            "logical_type": "numeric",
-            **base,
-        }
+        return base
 
     q1 = float(valid.quantile(0.25))
     q2 = float(valid.quantile(0.50))
     q3 = float(valid.quantile(0.75))
 
     return {
-        "logical_type": "numeric",
         **base,
         "median": q2,
         "iqr": float(q3 - q1),
@@ -63,13 +95,13 @@ def profile_numeric(series: pd.Series) -> dict:
     }
 
 
-def profile_categorical(series: pd.Series) -> dict:
+def profile_categorical(series: pd.Series, column_metadata: dict | None = None) -> dict:
     s = series.dropna().astype(str)
 
     base = {
         "logical_type": "categorical",
         "row_count": int(len(series)),
-        "null_rate": float(series.isna().mean()),
+        **_build_null_metadata(series, column_metadata),
     }
 
     if s.empty:
@@ -88,13 +120,13 @@ def profile_categorical(series: pd.Series) -> dict:
     }
 
 
-def profile_text_like(series: pd.Series, logical_type: str) -> dict:
+def profile_text_like(series: pd.Series, logical_type: str, column_metadata: dict | None = None) -> dict:
     s = series.dropna().astype(str)
 
     base = {
         "logical_type": logical_type,
         "row_count": int(len(series)),
-        "null_rate": float(series.isna().mean()),
+        **_build_null_metadata(series, column_metadata),
     }
 
     if s.empty:
@@ -120,15 +152,15 @@ def profile_text_like(series: pd.Series, logical_type: str) -> dict:
     }
 
 
-def profile_datetime(series: pd.Series) -> dict:
-    parsed = pd.to_datetime(series, errors="coerce")
+def profile_datetime(series: pd.Series, column_metadata: dict | None = None) -> dict:
+    parsed = pd.to_datetime(series, errors="coerce", format="mixed")
     valid = parsed.dropna()
 
     base = {
         "logical_type": "datetime",
         "row_count": int(len(series)),
-        "null_rate": float(series.isna().mean()),
         "parse_success_rate": float(parsed.notna().mean()),
+        **_build_null_metadata(series, column_metadata),
     }
 
     if valid.empty:
@@ -142,13 +174,13 @@ def profile_datetime(series: pd.Series) -> dict:
     }
 
 
-def profile_boolean(series: pd.Series) -> dict:
+def profile_boolean(series: pd.Series, column_metadata: dict | None = None) -> dict:
     non_null = series.dropna()
 
     return {
         "logical_type": "boolean",
         "row_count": int(len(series)),
-        "null_rate": float(series.isna().mean()),
+        **_build_null_metadata(series, column_metadata),
         "true_rate": float((non_null == True).mean()) if len(non_null) else 0.0,
         "false_rate": float((non_null == False).mean()) if len(non_null) else 0.0,
     }
@@ -160,25 +192,27 @@ def build_column_profile(
     schema_name: str,
     table_name: str,
     column_name: str,
+    table_metadata: dict[str, dict] | None = None,
 ) -> ColumnProfile:
     series = df[column_name]
     logical_type = infer_logical_type(series, column_name)
+    column_metadata = (table_metadata or {}).get(column_name, {})
 
     if logical_type == "numeric":
-        profile = profile_numeric(series)
+        profile = profile_numeric(series, column_metadata=column_metadata)
     elif logical_type == "categorical":
-        profile = profile_categorical(series)
+        profile = profile_categorical(series, column_metadata=column_metadata)
     elif logical_type in {"structured_text", "identifier", "free_text"}:
-        profile = profile_text_like(series, logical_type)
+        profile = profile_text_like(series, logical_type, column_metadata=column_metadata)
     elif logical_type == "datetime":
-        profile = profile_datetime(series)
+        profile = profile_datetime(series, column_metadata=column_metadata)
     elif logical_type == "boolean":
-        profile = profile_boolean(series)
+        profile = profile_boolean(series, column_metadata=column_metadata)
     else:
         profile = {
             "logical_type": "unknown",
             "row_count": int(len(series)),
-            "null_rate": float(series.isna().mean()),
+            **_build_null_metadata(series, column_metadata),
         }
 
     return ColumnProfile(
@@ -196,6 +230,7 @@ def profile_table(
     database_name: str,
     schema_name: str,
     table_name: str,
+    table_metadata: dict[str, dict] | None = None,
 ) -> list[ColumnProfile]:
     profiles = []
     for column_name in df.columns:
@@ -206,6 +241,7 @@ def profile_table(
                 schema_name=schema_name,
                 table_name=table_name,
                 column_name=column_name,
+                table_metadata=table_metadata,
             )
         )
     return profiles

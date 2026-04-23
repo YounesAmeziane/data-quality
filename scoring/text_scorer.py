@@ -1,20 +1,18 @@
 from __future__ import annotations
 
 from profiling.utils import infer_shape
+from scoring.null_handler import score_null
 from scoring.utils import clamp
 
 
 def score_text(value, profile):
+    null_result = score_null(value, profile)
+    if null_result is not None:
+        return null_result
+
     reasons = []
     features = {}
     score = 0.0
-
-    if value is None:
-        return {
-            "score": 0.1,
-            "reasons": ["null"],
-            "features": {},
-        }
 
     value = str(value)
 
@@ -23,12 +21,7 @@ def score_text(value, profile):
     shapes = profile.get("top_shapes", {})
     logical_type = profile.get("logical_type", "structured_text")
 
-    # Length deviation
-    if std_len <= 0:
-        len_dev = 0.0
-    else:
-        len_dev = abs(len(value) - avg_len) / std_len
-
+    len_dev = abs(len(value) - avg_len) / std_len if std_len > 0 else 0.0
     features["len_dev"] = len_dev
 
     if len_dev > 6:
@@ -38,14 +31,12 @@ def score_text(value, profile):
         score += 0.10
         reasons.append("length_deviation")
 
-    # Shape anomaly
     shape = infer_shape(value)
     shape_freq = float(shapes.get(shape, 0.0))
 
     features["shape"] = shape
     features["shape_freq"] = shape_freq
 
-    # identifiers / structured text can use shape more strongly
     if logical_type in {"identifier", "structured_text"}:
         if shape_freq == 0:
             score += 0.25
@@ -54,7 +45,6 @@ def score_text(value, profile):
             score += 0.10
             reasons.append("rare_shape")
     else:
-        # free text should barely care about shape
         if shape_freq == 0:
             score += 0.05
             reasons.append("unseen_shape_soft")
