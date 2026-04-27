@@ -14,6 +14,15 @@ def infer_logical_type(series: pd.Series, column_name: str) -> str:
         return "boolean"
 
     if pd.api.types.is_numeric_dtype(series):
+        # detect YYYYMMDD integer date keys (e.g. 20230415) before treating as numeric
+        if any(token in col for token in ["date", "time", "timestamp"]):
+            non_null_num = series.dropna()
+            if len(non_null_num) > 0:
+                looks_like_yyyymmdd = (
+                    (non_null_num >= 19000101) & (non_null_num <= 21001231)
+                ).mean() > 0.9
+                if looks_like_yyyymmdd:
+                    return "datetime"
         return "numeric"
 
     if pd.api.types.is_datetime64_any_dtype(series):

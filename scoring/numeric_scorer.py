@@ -12,8 +12,10 @@ def score_numeric(value, profile):
 
     parsed = pd.to_numeric(value, errors="coerce")
     if pd.isna(parsed):
+        # parse_fail means the column was likely mistyped, not that the row is broken
+        # cap at 0.3 so a single unparseable column doesn't nuke the whole row score
         return {
-            "score": 1.0,
+            "score": 0.3,
             "reasons": ["parse_fail"],
             "features": {"parsed": None},
         }
@@ -49,8 +51,10 @@ def score_numeric(value, profile):
         score += 0.1
         reasons.append("moderate_outlier")
 
-    # mild percentile guard
-    if p01 is not None and p99 is not None:
+    # skip percentile guard when IQR is near-zero — uniform distributions
+    # like date dimension keys have p01/p99 that are just the min/max,
+    # which flags every row near the edges as anomalous
+    if p01 is not None and p99 is not None and iqr > 0:
         if parsed < p01 or parsed > p99:
             score += 0.1
             reasons.append("outside_p01_p99")

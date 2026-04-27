@@ -33,14 +33,29 @@ def score_text(value, profile):
 
     shape = infer_shape(value)
     shape_freq = float(shapes.get(shape, 0.0))
+    distinct_ratio = float(profile.get("distinct_ratio", 0.0))
+    high_cardinality = distinct_ratio > 0.5
 
     features["shape"] = shape
     features["shape_freq"] = shape_freq
 
+    # check if there's a dominant shape (one shape covers >90% of values)
+    top_shape_freq = max(shapes.values()) if shapes else 0.0
+    has_dominant_shape = top_shape_freq >= 0.9
+
     if logical_type in {"identifier", "structured_text"}:
         if shape_freq == 0:
-            score += 0.25
-            reasons.append("unseen_shape")
+            if has_dominant_shape:
+                # column has a very consistent format — deviation is highly suspicious
+                score += 0.5
+                reasons.append("shape_violation")
+            elif high_cardinality:
+                # naturally varied shapes, be lenient
+                score += 0.05
+                reasons.append("unseen_shape")
+            else:
+                score += 0.25
+                reasons.append("unseen_shape")
         elif shape_freq < 0.01:
             score += 0.10
             reasons.append("rare_shape")
