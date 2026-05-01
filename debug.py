@@ -5,8 +5,8 @@ sys.path.insert(0, '.')
 from dotenv import load_dotenv
 load_dotenv()
 
-from profiling.profile_loader import load_column_profiles
-from scoring.text_scorer import score_text
+from validity.profiling.profile_loader import load_column_profiles
+from validity.scoring.text_scorer import score_text
 
 profiles = load_column_profiles(
     output_dir=os.getenv("PROFILE_OUTPUT_DIR", "output/profiles"),
@@ -21,8 +21,8 @@ print()
 print("Score for '111111':", score_text("111111", dept_profile))
 print("Score for '100.10.1234567':", score_text("100.10.1234567", dept_profile))
 
-from profiling.db import read_table_sample
-from scoring.row_scorer import score_row
+from validity.profiling.db import read_table_sample
+from validity.scoring.row_scorer import score_row
 
 df = read_table_sample(
     database="MetadataRepository",
@@ -31,7 +31,6 @@ df = read_table_sample(
     sample_rows=50000,
 )
 
-# find the row with DepartmentKey=95
 row = df[df["DepartmentKey"] == 95].iloc[0]
 print("Row values:", row.to_dict())
 print()

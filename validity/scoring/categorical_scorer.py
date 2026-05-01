@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from scoring.null_handler import score_null
-from scoring.utils import clamp
+from validity.scoring.null_handler import score_null
+from validity.scoring.utils import clamp
 
 
 def score_categorical(value, profile):
@@ -33,10 +33,10 @@ def score_categorical(value, profile):
         features["seen_in_top_values"] = True
         features["frequency"] = freq
 
-        if freq < 0.01:
+        if freq < 0.001:
             score += 0.25
             reasons.append("rare_value")
-        elif freq < 0.05:
+        elif freq < 0.01:
             score += 0.1
             reasons.append("low_frequency")
 

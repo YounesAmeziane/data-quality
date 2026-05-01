@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from profiling.utils import infer_shape
-from scoring.null_handler import score_null
-from scoring.utils import clamp
+from validity.profiling.utils import infer_shape
+from validity.scoring.null_handler import score_null
+from validity.scoring.utils import clamp
 
 
 def score_text(value, profile):
@@ -54,7 +54,8 @@ def score_text(value, profile):
                 score += 0.05
                 reasons.append("unseen_shape")
             else:
-                score += 0.25
+                # no dominant structure — an unseen shape is a soft hint, not a violation
+                score += 0.1
                 reasons.append("unseen_shape")
         elif shape_freq < 0.01:
             score += 0.10
