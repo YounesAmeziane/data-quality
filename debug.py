@@ -9,7 +9,6 @@ from validity.profiling.profile_loader import load_column_profiles
 from validity.scoring.text_scorer import score_text
 
 profiles = load_column_profiles(
-    output_dir=os.getenv("PROFILE_OUTPUT_DIR", "output/profiles"),
     database_name="MetadataRepository",
     schema_name="dbo",
     table_name="department_validity_test",

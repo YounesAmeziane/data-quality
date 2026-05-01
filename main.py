@@ -20,11 +20,20 @@ def main() -> None:
         required=False,
         help="Operation within the module (e.g. 'profile' or 'scan' for validity).",
     )
+    parser.add_argument(
+        "--table_name",
+        required=False,
+        help=(
+            "Target to scan. Pass a DB name (e.g. HRDM_DEV) to scan the entire DB, "
+            "or a bracketed reference (e.g. [DB].[schema].[table]) for a single table. "
+            "Omit to scan all databases in DB_DATABASES."
+        ),
+    )
     args = parser.parse_args()
 
     if args.scan_type == "validity":
         from validity.runner import run
-        run(scan=args.scan)
+        run(scan=args.scan, table_name=args.table_name)
     elif args.scan_type == "consistency":
         raise NotImplementedError("Consistency module not yet implemented.")
     elif args.scan_type == "stability":

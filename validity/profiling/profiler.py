@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
+from sqlalchemy import text
 
 from validity.profiling.type_inference import infer_logical_type
 from validity.profiling.utils import infer_shape, normalize_char_class_ratio
@@ -258,14 +259,16 @@ def profile_table(
     ]
 
 
-def save_profiles_to_json(
+def save_profiles_to_db(
     profiles: list[ColumnProfile],
-    output_dir: str,
     database_name: str,
     schema_name: str,
     table_name: str,
-) -> str:
-    os.makedirs(output_dir, exist_ok=True)
+) -> None:
+    from validity.profiling.db import get_engine
+
+    metadata_db = os.getenv("METADATA_DATABASE", "MetadataRepository")
+    engine = get_engine(metadata_db)
 
     payload = {
         "database_name": database_name,
@@ -275,10 +278,27 @@ def save_profiles_to_json(
         "columns":       [asdict(p) for p in profiles],
     }
 
-    filename = f"{database_name}__{schema_name}__{table_name}.json"
-    path     = os.path.join(output_dir, filename)
+    profile_json    = json.dumps(payload, ensure_ascii=False)
+    qualified_table = f"{schema_name}.{table_name}"
 
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
+    # last_profile is a SQL Server timestamp/rowversion column — it is auto-managed
+    # by the engine and must never appear in INSERT or UPDATE statements.
+    upsert = text("""
+        MERGE dbo.profiles AS target
+        USING (VALUES (:db_name, :tbl_name, :profile))
+            AS source (db_name, table_name, profile)
+        ON  target.db_name    = source.db_name
+        AND target.table_name = source.table_name
+        WHEN MATCHED THEN
+            UPDATE SET profile = source.profile
+        WHEN NOT MATCHED THEN
+            INSERT (db_name, table_name, profile)
+            VALUES (source.db_name, source.table_name, source.profile);
+    """)
 
-    return path
+    with engine.begin() as conn:
+        conn.execute(upsert, {
+            "db_name":  database_name,
+            "tbl_name": qualified_table,
+            "profile":  profile_json,
+        })
