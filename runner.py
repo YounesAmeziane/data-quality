@@ -74,7 +74,8 @@ def _dispatch(scan_type: str, scan: str, table_name: str | None, job_id: int) ->
     elif scan_type == "consistency":
         raise NotImplementedError("Consistency module not yet implemented.")
     elif scan_type == "stability":
-        raise NotImplementedError("Stability module not yet implemented.")
+        from stability.runner import run
+        run(scan=scan, table_name=table_name, job_id=job_id)
     else:
         raise ValueError(f"Unknown scan_type: '{scan_type}'")
 

@@ -37,7 +37,8 @@ def main() -> None:
     elif args.scan_type == "consistency":
         raise NotImplementedError("Consistency module not yet implemented.")
     elif args.scan_type == "stability":
-        raise NotImplementedError("Stability module not yet implemented.")
+        from stability.runner import run
+        run(scan=args.scan, table_name=args.table_name)
 
 
 if __name__ == "__main__":
