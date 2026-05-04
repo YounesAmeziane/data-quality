@@ -11,6 +11,8 @@ from sqlalchemy import text
 from validity.profiling.db import read_table_sample
 from validity.profiling.profile_loader import load_column_profiles
 from validity.scoring.row_scorer import score_row
+from validity.scoring.vectorized import score_column
+from validity.scanning.column_filter import should_scan_column
 
 
 def scan_table(
@@ -58,33 +60,46 @@ def scan_table(
         table_name=table_name,
     )
 
-    flagged_rows: list[dict[str, Any]]        = []
-    skipped_reason_counts: dict[str, int]     = {}
+    # Pass 1 — vectorized: score every row for every eligible column at once.
+    # This avoids Python-level row iteration for the bulk of the work.
+    skipped_reason_counts: dict[str, int] = {}
+    col_score_series: dict[str, pd.Series] = {}
 
-    for row_index, row in df.iterrows():
-        result = score_row(
-            row=row,
-            column_profiles=column_profiles,
-            row_score_threshold=row_score_threshold,
-        )
-
-        # Accumulate skip-reason stats (once per table, not once per row)
-        for skipped in result.get("skipped_columns", []):
-            reason = skipped["reason"]
+    for col in df.columns:
+        profile = column_profiles.get(col)
+        should, reason = should_scan_column(col, profile)
+        if not should:
             skipped_reason_counts[reason] = skipped_reason_counts.get(reason, 0) + 1
+        else:
+            col_score_series[col] = score_column(df[col], profile)
 
-        if result["row_score"] >= row_score_threshold:
-            flagged_rows.append({
-                "row_index":       int(row_index),
-                "row_score":       float(result["row_score"]),
-                "flagged":         bool(result["flagged"]),
-                "details":         result["details"],
-                "skipped_columns": result.get("skipped_columns", []),
-                "row_data":        _make_json_safe_dict(row.to_dict()),
-            })
+    if col_score_series:
+        scores_df   = pd.DataFrame(col_score_series, index=df.index)
+        contributing = scores_df.where(scores_df >= 0.15, 0.0)
+        row_scores  = 1.0 - (1.0 - contributing).prod(axis=1)
+    else:
+        row_scores = pd.Series(0.0, index=df.index)
 
-    row_count   = int(len(df))
-    flagged_n   = int(len(flagged_rows))
+    # Pass 2 — detail pass: run the per-row scorer only for flagged rows to
+    # collect human-readable reasons and features for each flagged column.
+    flagged_mask = row_scores >= row_score_threshold
+    flagged_rows: list[dict[str, Any]] = []
+
+    for row_index in df.index[flagged_mask]:
+        row    = df.loc[row_index]
+        detail = score_row(row=row, column_profiles=column_profiles,
+                           row_score_threshold=row_score_threshold)
+        flagged_rows.append({
+            "row_index":       int(row_index),
+            "row_score":       float(row_scores[row_index]),
+            "flagged":         True,
+            "details":         detail["details"],
+            "skipped_columns": detail.get("skipped_columns", []),
+            "row_data":        _make_json_safe_dict(row.to_dict()),
+        })
+
+    row_count = int(len(df))
+    flagged_n = int(len(flagged_rows))
 
     return {
         **base_meta,
@@ -96,7 +111,7 @@ def scan_table(
     }
 
 
-def save_scan_results(scan_result: dict[str, Any]) -> int:
+def save_scan_results(scan_result: dict[str, Any], job_id: int | None = None) -> int:
     """
     Persist scan results to the three validity tables in the metadata DB.
     Returns the job_id from validity_scan_runs.
@@ -111,12 +126,13 @@ def save_scan_results(scan_result: dict[str, Any]) -> int:
         row = conn.execute(
             text("""
                 INSERT INTO dbo.validity_scan_runs
-                    (db_name, table_name, scanned_at, threshold, rows_scanned, rows_flagged, flagged_rate)
+                    (job_id, db_name, table_name, scanned_at, threshold, rows_scanned, rows_flagged, flagged_rate)
                 OUTPUT INSERTED.id
-                VALUES (:db_name, :table_name, :scanned_at, :threshold,
+                VALUES (:job_id, :db_name, :table_name, :scanned_at, :threshold,
                         :rows_scanned, :rows_flagged, :flagged_rate)
             """),
             {
+                "job_id":       job_id,
                 "db_name":      scan_result["database_name"],
                 "table_name":   qualified_table,
                 "scanned_at":   datetime.fromisoformat(scan_result["scanned_at"]),

@@ -13,13 +13,13 @@ from validity.profiling.profiler import profile_table, save_profiles_to_db
 from validity.scanning.table_scanner import save_scan_results, scan_table
 
 
-def run(scan: str | None, table_name: str | None = None, **_) -> None:
+def run(scan: str | None, table_name: str | None = None, job_id: int | None = None, **_) -> None:
     target = _parse_target(table_name)
 
     if scan == "profile":
         _run_profile(target)
     elif scan == "scan":
-        _run_scan(target)
+        _run_scan(target, job_id=job_id)
     else:
         raise ValueError(
             f"Unknown --scan value '{scan}' for validity. Use 'profile' or 'scan'."
@@ -114,7 +114,7 @@ def _run_profile(target: dict) -> None:
 # Scan
 # ---------------------------------------------------------------------------
 
-def _run_scan(target: dict) -> None:
+def _run_scan(target: dict, job_id: int | None = None) -> None:
     sample_rows         = int(os.getenv("TABLE_SAMPLE_ROWS", "50000"))
     row_score_threshold = float(os.getenv("ROW_SCORE_THRESHOLD", "0.7"))
 
@@ -136,11 +136,11 @@ def _run_scan(target: dict) -> None:
                 database_name, schema_name, table_name,
                 sample_rows, row_score_threshold,
             )
-            job_id = save_scan_results(result)
+            run_id = save_scan_results(result, job_id=job_id)
             print(
                 f"    -> {result['row_count_scanned']} rows scanned, "
                 f"{result['flagged_row_count']} flagged "
-                f"({result['flagged_rate']:.1%}) — job_id={job_id}"
+                f"({result['flagged_rate']:.1%}) — run_id={run_id}"
             )
         except FileNotFoundError as exc:
             print(f"    -> [SKIPPED] No profile in DB: {exc}")

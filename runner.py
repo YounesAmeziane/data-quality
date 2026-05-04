@@ -55,11 +55,11 @@ def _mark_done(job_id: int) -> None:
         )
 
 
-def _mark_failed(job_id: int) -> None:
+def _mark_failed(job_id: int, error: str) -> None:
     with _engine().begin() as conn:
         conn.execute(
-            text(f"UPDATE {_JOB_TABLE} SET status = 'failed', finished_at = :now WHERE job_id = :id"),
-            {"now": datetime.now(timezone.utc), "id": job_id},
+            text(f"UPDATE {_JOB_TABLE} SET status = 'failed', finished_at = :now, error = :error WHERE job_id = :id"),
+            {"now": datetime.now(timezone.utc), "error": error, "id": job_id},
         )
 
 
@@ -67,10 +67,10 @@ def _mark_failed(job_id: int) -> None:
 # Dispatch
 # ---------------------------------------------------------------------------
 
-def _dispatch(scan_type: str, scan: str, table_name: str | None) -> None:
+def _dispatch(scan_type: str, scan: str, table_name: str | None, job_id: int) -> None:
     if scan_type == "validity":
         from validity.runner import run
-        run(scan=scan, table_name=table_name)
+        run(scan=scan, table_name=table_name, job_id=job_id)
     elif scan_type == "consistency":
         raise NotImplementedError("Consistency module not yet implemented.")
     elif scan_type == "stability":
@@ -97,11 +97,12 @@ def main() -> None:
         print(f"\n[JOB {job_id}] scan_type={scan_type} scan={scan} table_name={table_name}")
 
         try:
-            _dispatch(scan_type, scan, table_name or None)
+            _dispatch(scan_type, scan, table_name or None, job_id=job_id)
             _mark_done(job_id)
             print(f"[JOB {job_id}] done")
         except Exception as exc:
-            _mark_failed(job_id)
+            error_msg = traceback.format_exc()
+            _mark_failed(job_id, error=error_msg)
             print(f"[JOB {job_id}] failed: {exc}")
             traceback.print_exc()
 

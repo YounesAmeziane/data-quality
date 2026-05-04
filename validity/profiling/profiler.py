@@ -117,7 +117,7 @@ def profile_categorical(series: pd.Series, column_metadata: dict | None = None) 
         "distinct_count": int(s.nunique()),
         "distinct_ratio": float(s.nunique() / max(len(s), 1)),
         "entropy":        entropy,
-        "top_values":     value_freq.head(20).to_dict(),
+        "top_values":     value_freq.head(100).to_dict(),
     }
 
 
@@ -139,7 +139,7 @@ def profile_text_like(
 
     lengths    = s.str.len()
     shapes     = s.map(infer_shape)
-    top_shapes = shapes.value_counts(normalize=True).head(20).to_dict()
+    top_shapes = shapes.value_counts(normalize=True).head(100).to_dict()
 
     full_text  = "".join(s.tolist())
     char_ratio = normalize_char_class_ratio(full_text)
