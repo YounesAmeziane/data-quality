@@ -40,10 +40,11 @@ def _parse_target(table_name: str | None) -> dict:
     if table_name is None:
         return {"mode": "all"}
 
-    # Check if it matches a known DB name (case-insensitive)
+    # Check if it matches a known DB name (case-insensitive), with or without brackets
     known_dbs = get_database_list()
+    stripped = table_name.strip().strip("[]")
     for db in known_dbs:
-        if table_name.strip().lower() == db.lower():
+        if stripped.lower() == db.lower():
             return {"mode": "db", "database": db}
 
     # Try bracket format: [db].[schema].[table]

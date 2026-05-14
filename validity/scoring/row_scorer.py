@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import os
+
 from validity.scanning.column_filter import should_scan_column
 from validity.scoring.scorer import score_value
+
+_MIN_CONTRIBUTION = float(os.getenv("MIN_CONTRIBUTION", "0.15"))
 
 
 def score_row(
@@ -47,10 +51,6 @@ def score_row(
                 "features": result.get("features", {}),
             })
 
-    # Probabilistic combination (independent-anomaly assumption).
-    # Only scores >= 0.15 contribute — 0.1 signals are soft hints that are tracked
-    # in details but shouldn't accumulate across many columns to trip the threshold.
-    _MIN_CONTRIBUTION = 0.15
     combined = 1.0
     for s in column_scores:
         if s >= _MIN_CONTRIBUTION:

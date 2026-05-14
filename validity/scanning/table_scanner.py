@@ -14,6 +14,8 @@ from validity.scoring.row_scorer import score_row
 from validity.scoring.vectorized import score_column
 from validity.scanning.column_filter import should_scan_column
 
+_MIN_CONTRIBUTION = float(os.getenv("MIN_CONTRIBUTION", "0.15"))
+
 
 def scan_table(
     database_name: str,
@@ -75,7 +77,7 @@ def scan_table(
 
     if col_score_series:
         scores_df   = pd.DataFrame(col_score_series, index=df.index)
-        contributing = scores_df.where(scores_df >= 0.15, 0.0)
+        contributing = scores_df.where(scores_df >= _MIN_CONTRIBUTION, 0.0)
         row_scores  = 1.0 - (1.0 - contributing).prod(axis=1)
     else:
         row_scores = pd.Series(0.0, index=df.index)
@@ -114,7 +116,7 @@ def scan_table(
 def save_scan_results(scan_result: dict[str, Any], job_id: int | None = None) -> int:
     """
     Persist scan results to the three validity tables in the metadata DB.
-    Returns the job_id from validity_scan_runs.
+    Returns the run_id from validity_scan_runs.
     """
     from validity.profiling.db import get_engine
 
@@ -142,17 +144,18 @@ def save_scan_results(scan_result: dict[str, Any], job_id: int | None = None) ->
                 "flagged_rate": scan_result["flagged_rate"],
             },
         ).fetchone()
-        job_id = row[0]
+        run_id = row[0]
 
         for flagged_row in scan_result.get("flagged_rows", []):
             anomaly_row = conn.execute(
                 text("""
-                    INSERT INTO dbo.validity_anomaly_rows (job_id, row_index, row_score, row_data)
+                    INSERT INTO dbo.validity_anomaly_rows (job_id, run_id, row_index, row_score, row_data)
                     OUTPUT INSERTED.id
-                    VALUES (:job_id, :row_index, :row_score, :row_data)
+                    VALUES (:job_id, :run_id, :row_index, :row_score, :row_data)
                 """),
                 {
                     "job_id":    job_id,
+                    "run_id":    run_id,
                     "row_index": flagged_row["row_index"],
                     "row_score": flagged_row["row_score"],
                     "row_data":  json.dumps(flagged_row["row_data"], ensure_ascii=False, default=_json_default),
@@ -164,10 +167,11 @@ def save_scan_results(scan_result: dict[str, Any], job_id: int | None = None) ->
                 conn.execute(
                     text("""
                         INSERT INTO dbo.validity_anomaly_details
-                            (anomaly_row_id, column_name, column_score, reasons)
-                        VALUES (:anomaly_row_id, :column_name, :column_score, :reasons)
+                            (job_id, anomaly_row_id, column_name, column_score, reasons)
+                        VALUES (:job_id, :anomaly_row_id, :column_name, :column_score, :reasons)
                     """),
                     {
+                        "job_id":         job_id,
                         "anomaly_row_id": anomaly_row_id,
                         "column_name":    detail["column"],
                         "column_score":   detail["score"],
@@ -175,7 +179,7 @@ def save_scan_results(scan_result: dict[str, Any], job_id: int | None = None) ->
                     },
                 )
 
-    return job_id
+    return run_id
 
 
 # ---------------------------------------------------------------------------

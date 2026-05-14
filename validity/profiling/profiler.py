@@ -10,7 +10,7 @@ import pandas as pd
 from sqlalchemy import text
 
 from validity.profiling.type_inference import infer_logical_type
-from validity.profiling.utils import infer_shape, normalize_char_class_ratio
+from validity.profiling.utils import infer_shape
 
 
 @dataclass
@@ -141,19 +141,15 @@ def profile_text_like(
     shapes     = s.map(infer_shape)
     top_shapes = shapes.value_counts(normalize=True).head(100).to_dict()
 
-    full_text  = "".join(s.tolist())
-    char_ratio = normalize_char_class_ratio(full_text)
-
     return {
         **base,
-        "avg_length":      float(lengths.mean()),
-        "std_length":      float(lengths.std(ddof=0)) if len(lengths) > 1 else 0.0,
-        "min_length":      int(lengths.min()),
-        "max_length":      int(lengths.max()),
-        "distinct_count":  int(s.nunique()),
-        "distinct_ratio":  float(s.nunique() / max(len(s), 1)),
-        "char_class_ratio": char_ratio,
-        "top_shapes":      top_shapes,
+        "avg_length":     float(lengths.mean()),
+        "std_length":     float(lengths.std(ddof=0)) if len(lengths) > 1 else 0.0,
+        "min_length":     int(lengths.min()),
+        "max_length":     int(lengths.max()),
+        "distinct_count": int(s.nunique()),
+        "distinct_ratio": float(s.nunique() / max(len(s), 1)),
+        "top_shapes":     top_shapes,
     }
 
 
