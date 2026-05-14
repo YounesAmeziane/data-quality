@@ -25,8 +25,9 @@ def _parse_target(table_name: str | None) -> dict:
         return {"mode": "all"}
 
     known_dbs = get_database_list()
+    stripped = table_name.strip().strip("[]")
     for db in known_dbs:
-        if table_name.strip().lower() == db.lower():
+        if stripped.lower() == db.lower():
             return {"mode": "db", "database": db}
 
     parts = re.findall(r'\[([^\]]+)\]', table_name)
