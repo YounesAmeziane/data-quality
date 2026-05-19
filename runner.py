@@ -84,28 +84,40 @@ def _dispatch(scan_type: str, scan: str, table_name: str | None, job_id: int) ->
 # Main loop
 # ---------------------------------------------------------------------------
 
+def _log(msg: str) -> None:
+    line = f"[{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
+    print(line)
+    log_path = os.path.join(os.path.dirname(__file__), "runner.log")
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+
 def main() -> None:
-    print(f"Runner started — polling {_JOB_DB}.{_JOB_TABLE} every {_POLL_INTERVAL}s")
+    _log(f"Runner started — polling {_JOB_DB}.{_JOB_TABLE} every {_POLL_INTERVAL}s")
 
     while True:
-        job = _claim_job()
+        try:
+            job = _claim_job()
+        except Exception as exc:
+            _log(f"ERROR claiming job: {exc}\n{traceback.format_exc()}")
+            time.sleep(5)
+            continue
 
         if job is None:
             time.sleep(_POLL_INTERVAL)
             continue
 
         job_id, scan_type, scan, table_name = job
-        print(f"\n[JOB {job_id}] scan_type={scan_type} scan={scan} table_name={table_name}")
+        _log(f"[JOB {job_id}] scan_type={scan_type} scan={scan} table_name={table_name}")
 
         try:
             _dispatch(scan_type, scan, table_name or None, job_id=job_id)
             _mark_done(job_id)
-            print(f"[JOB {job_id}] done")
+            _log(f"[JOB {job_id}] done")
         except Exception as exc:
             error_msg = traceback.format_exc()
             _mark_failed(job_id, error=error_msg)
-            print(f"[JOB {job_id}] failed: {exc}")
-            traceback.print_exc()
+            _log(f"[JOB {job_id}] failed: {exc}\n{error_msg}")
 
 
 if __name__ == "__main__":
