@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
-from urllib.parse import quote_plus
 
 import pandas as pd
 from dotenv import load_dotenv
@@ -17,29 +16,30 @@ def get_env_list(name: str) -> list[str]:
     return [x.strip() for x in raw.split(",") if x.strip()]
 
 
-def build_connection_string(database: str) -> str:
-    server = os.getenv("DB_SERVER")
-    driver = os.getenv("DB_DRIVER", "ODBC Driver 17 for SQL Server")
+@lru_cache(maxsize=16)
+def get_engine(database: str) -> Engine:
+    """Return a cached SQLAlchemy engine for the given database."""
+    import pyodbc as _pyodbc
+
+    server   = os.getenv("DB_SERVER")
+    driver   = os.getenv("DB_DRIVER", "ODBC Driver 17 for SQL Server")
+    username = os.getenv("DB_USERNAME")
+    password = os.getenv("DB_PASSWORD")
 
     if not server:
         raise ValueError("Missing DB_SERVER in .env")
 
-    odbc_str = (
-        f"DRIVER={{{driver}}};"
-        f"SERVER={server};"
-        f"DATABASE={database};"
-        "Trusted_Connection=yes;"
-        "Encrypt=no;"
-    )
-    return f"mssql+pyodbc:///?odbc_connect={quote_plus(odbc_str)}"
+    if username and password:
+        odbc_str = f"DRIVER={{{driver}}};SERVER={server};DATABASE={database};UID={username};PWD={password};Encrypt=no;"
+    else:
+        odbc_str = f"DRIVER={{{driver}}};SERVER={server};DATABASE={database};Trusted_Connection=yes;Encrypt=no;"
 
+    def creator():
+        return _pyodbc.connect(odbc_str)
 
-@lru_cache(maxsize=16)
-def get_engine(database: str) -> Engine:
-    """Return a cached SQLAlchemy engine for the given database."""
-    conn_str = build_connection_string(database)
     return create_engine(
-        conn_str,
+        "mssql+pyodbc://",
+        creator=creator,
         fast_executemany=True,
         pool_pre_ping=True,
         pool_size=5,
