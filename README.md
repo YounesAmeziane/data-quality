@@ -1,6 +1,6 @@
 # Data Quality Platform
 
-Automated data quality scanning for SQL Server databases. Three modules: **validity**, **stability**, and **consistency** (in progress).
+Automated data quality scanning for SQL Server databases. Three modules: **validity**, **stability**, and **consistency** (planned).
 
 ---
 
@@ -9,8 +9,10 @@ Automated data quality scanning for SQL Server databases. Three modules: **valid
 ```
 data-quality/
 ├── main.py                        # CLI entry point
-├── runner.py                      # Automated job queue runner
+├── runner.py                      # Automated job queue runner (multi-worker)
 ├── .env                           # Configuration
+├── wheels/                        # Offline pip wheels for air-gapped deployment
+├── python/                        # Embeddable Python (air-gapped servers)
 │
 ├── validity/                      # Anomaly detection on column values
 │   ├── runner.py                  # Module entry point
@@ -19,7 +21,7 @@ data-quality/
 │   │   ├── profiler.py            # Per-column statistical profilers
 │   │   ├── profile_loader.py      # Loads profiles from DB
 │   │   ├── type_inference.py      # Infers logical type per column
-│   │   └── utils.py               # Shape inference, char class helpers
+│   │   └── utils.py               # Shape inference helpers
 │   ├── scanning/
 │   │   ├── table_scanner.py       # Orchestrates scan + writes results to DB
 │   │   └── column_filter.py       # Decides which columns to score
@@ -30,14 +32,15 @@ data-quality/
 │       ├── numeric_scorer.py      # Numeric anomaly logic
 │       ├── categorical_scorer.py  # Categorical anomaly logic
 │       ├── text_scorer.py         # Text/shape anomaly logic
+│       ├── datetime_scorer.py     # Datetime anomaly logic
+│       ├── boolean_scorer.py      # Boolean anomaly logic
 │       ├── null_handler.py        # Null scoring
 │       └── utils.py               # Shared scorer utilities
 │
-├── stability/                     # Row count and batch anomaly detection
+├── stability/                     # Row count anomaly detection
 │   ├── runner.py                  # Module entry point
-│   ├── row_count/
-│   │   └── scanner.py             # Snapshot + rolling baseline check
-│   └── batch/                     # Placeholder
+│   └── row_count/
+│       └── scanner.py             # Snapshot + rolling baseline check
 │
 └── consistency/                   # Cross-table / cross-field checks (planned)
     ├── cross_field/
@@ -55,6 +58,37 @@ data-quality/
 pip install pandas sqlalchemy pyodbc python-dotenv numpy
 ```
 
+### Air-gapped / restricted servers
+
+If the target server has no internet access:
+
+**On your dev machine:**
+```bash
+pip download -r requirements.txt -d wheels --platform win_amd64 --python-version 3.14 --only-binary=:all:
+```
+
+**Copy the project folder** (including `wheels/`) to the server, then:
+```bash
+pip install --no-index --find-links=wheels -r requirements.txt
+```
+
+If pip is not available (embeddable Python), bootstrap it first:
+```bash
+python\python.exe get-pip.py
+python\python.exe -m pip install --no-index --find-links=wheels -r requirements.txt
+```
+
+Also add `..` to `python\python314._pth` so the project root is on the path:
+```
+python314.zip
+.
+..
+
+import site
+```
+
+---
+
 ### `.env` Configuration
 
 ```env
@@ -63,15 +97,21 @@ DB_SERVER=YOUR_SERVER_NAME
 DB_DRIVER=ODBC Driver 17 for SQL Server
 DB_DATABASES=MyDatabase1,MyDatabase2     # comma-separated list of DBs to scan
 
+# SQL auth (optional — omit to use Windows auth / Trusted_Connection)
+DB_USERNAME=ai_user
+DB_PASSWORD=your_password
+
 # Metadata storage
 METADATA_DATABASE=MetadataRepository     # where profiles and scan results are stored
 
 # Job queue
 JOB_QUEUE_DATABASE=hrdm_dev              # DB that holds dbo.ai_scan
+RUNNER_WORKERS=2                         # parallel job workers
 
 # Validity scan settings
 TABLE_SAMPLE_ROWS=50000
 ROW_SCORE_THRESHOLD=0.85
+MIN_CONTRIBUTION=0.15                    # minimum column score to contribute to row score
 
 # Column filter settings
 SKIP_IDENTIFIERS=true
@@ -83,12 +123,9 @@ HIGH_NULL_THRESHOLD=0.98
 SKIP_COLUMN_HINTS=                       # comma-separated name substrings to skip
 FORCE_INCLUDE_COLUMNS=                   # override — always scan these columns
 FORCE_EXCLUDE_COLUMNS=                   # override — never scan these columns
-
-# Stability settings
-STABILITY_WINDOW=30                      # number of historical snapshots for baseline
-STABILITY_Z_THRESHOLD=3.0               # Z-score to flag a row count anomaly
-STABILITY_CHANGE_PCT_THRESHOLD=0.5      # 50% single-step change threshold (thin baseline fallback)
 ```
+
+> **Windows auth vs SQL auth**: if `DB_USERNAME` and `DB_PASSWORD` are set, SQL Server authentication is used. Otherwise the connection falls back to `Trusted_Connection=yes` (Windows auth). Use SQL auth when running as a service account that cannot pass Windows credentials over the network (double-hop problem).
 
 ---
 
@@ -97,7 +134,7 @@ STABILITY_CHANGE_PCT_THRESHOLD=0.5      # 50% single-step change threshold (thin
 ### MetadataRepository (validity results)
 
 #### `dbo.profiles`
-Stores the statistical profile for each table, as a JSON blob. Upserted on every profiling run.
+Statistical profile for each table, stored as a JSON blob. Upserted on every profiling run.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -112,7 +149,7 @@ One row per table per scan job.
 | Column | Type | Notes |
 |---|---|---|
 | id | int PK | |
-| job_id | int | Links to `dbo.ai_scan` |
+| job_id | int | Links to `hrdm_dev.dbo.ai_scan` |
 | db_name | nvarchar | |
 | table_name | nvarchar | `schema.table` format |
 | scanned_at | datetime2 | |
@@ -127,7 +164,8 @@ One row per flagged row.
 | Column | Type | Notes |
 |---|---|---|
 | id | int PK | |
-| job_id | int | Links to `validity_scan_runs.id` |
+| job_id | int | Links to `hrdm_dev.dbo.ai_scan` |
+| run_id | int | Links to `validity_scan_runs.id` |
 | row_index | int | DataFrame index of the flagged row |
 | row_score | float | Combined anomaly score [0–1] |
 | row_data | nvarchar(max) | JSON snapshot of the entire row |
@@ -137,11 +175,13 @@ One row per anomalous column within a flagged row.
 
 | Column | Type | Notes |
 |---|---|---|
-| id | int PK | |
+| job_id | int | Links to `hrdm_dev.dbo.ai_scan` |
 | anomaly_row_id | int | FK → `validity_anomaly_rows.id` |
 | column_name | nvarchar | |
 | column_score | float | |
-| reasons | nvarchar | Comma-separated signal names |
+| reasons | nvarchar | Comma-separated anomaly signal names |
+
+> All four tables share `job_id` from `dbo.ai_scan`, so any flagged result can be traced back to the originating job with a single ID.
 
 ---
 
@@ -153,7 +193,7 @@ Job queue. Insert a row to trigger a scan.
 | Column | Type | Notes |
 |---|---|---|
 | job_id | int PK | |
-| scan_type | nvarchar | `validity` / `stability` / `consistency` |
+| scan_type | nvarchar | `validity` / `stability` |
 | scan | nvarchar | Operation within the module |
 | table_name | nvarchar | Target (DB name or `[db].[schema].[table]`) |
 | status | nvarchar | `pending` → `processing` → `done` / `failed` |
@@ -213,7 +253,7 @@ python main.py --scan_type stability --scan row_count --table_name [HRDM_DEV].[d
 
 ### Automated Job Runner
 
-`runner.py` polls `hrdm_dev.dbo.ai_scan` every second and processes jobs automatically.
+`runner.py` polls `hrdm_dev.dbo.ai_scan` every second and processes jobs automatically using a thread pool.
 
 ```bash
 python runner.py
@@ -222,16 +262,57 @@ python runner.py
 Insert a job to trigger a scan:
 
 ```sql
+-- Validity scan on a single table
 INSERT INTO dbo.ai_scan (scan_type, scan, table_name, status)
 VALUES ('validity', 'scan', '[HRDM_DEV].[dbo].[Employees]', 'pending')
-```
 
-```sql
+-- Stability row count check on a whole database
 INSERT INTO dbo.ai_scan (scan_type, scan, table_name, status)
 VALUES ('stability', 'row_count', 'HRDM_DEV', 'pending')
 ```
 
-Jobs are claimed atomically with `UPDATE TOP(1) ... OUTPUT` so multiple runners can run in parallel without double-processing.
+Jobs are claimed atomically with `UPDATE TOP(1) ... OUTPUT` so multiple workers never process the same job. Worker count is controlled by `RUNNER_WORKERS` in `.env`.
+
+---
+
+### Production Deployment (Windows Server)
+
+The runner is deployed as a Windows Task Scheduler task running as `SYSTEM` (or a service account).
+
+**Create the task via PowerShell:**
+```powershell
+$action  = New-ScheduledTaskAction `
+    -Execute "C:\path\to\data-quality\python\python.exe" `
+    -Argument "runner.py" `
+    -WorkingDirectory "C:\path\to\data-quality"
+$trigger  = New-ScheduledTaskTrigger -AtStartup
+$settings = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
+Register-ScheduledTask -TaskName "DataQualityRunner" -Action $action -Trigger $trigger `
+    -Settings $settings -RunLevel Highest -User "SYSTEM" -Force
+Start-ScheduledTask -TaskName "DataQualityRunner"
+```
+
+The task:
+- Starts automatically at system boot
+- Restarts automatically on failure (up to 999 times, every 1 minute)
+- Survives user logouts
+- Logs all activity to `runner.log` in the project folder
+
+> **Note**: When running as SYSTEM on a remote SQL Server, Windows credentials cannot be forwarded (Kerberos double-hop). Use SQL auth (`DB_USERNAME` / `DB_PASSWORD`) in `.env` instead.
+
+**SQL permissions required for the service account:**
+```sql
+-- hrdm_dev
+GRANT SELECT, INSERT, UPDATE ON dbo.ai_scan TO [ai_user];
+GRANT SELECT, INSERT, UPDATE ON dbo.row_count_snapshots TO [ai_user];
+GRANT SELECT, INSERT, UPDATE ON dbo.row_count_runs TO [ai_user];
+
+-- MetadataRepository
+GRANT SELECT, INSERT, UPDATE ON dbo.profiles TO [ai_user];
+GRANT SELECT, INSERT, UPDATE ON dbo.validity_scan_runs TO [ai_user];
+GRANT SELECT, INSERT, UPDATE ON dbo.validity_anomaly_rows TO [ai_user];
+GRANT SELECT, INSERT, UPDATE ON dbo.validity_anomaly_details TO [ai_user];
+```
 
 ---
 
@@ -259,36 +340,42 @@ Each column is assigned one of 7 logical types at profile time:
 | `structured_text` | column name contains email/phone/postal/code keywords |
 | `free_text` | avg length > 60 |
 
+### Anomaly Types
+
+Full reference of all 28 anomaly signals across 6 categories — see `validity_anomaly_types.pdf`.
+
+| Category | Key signals |
+|---|---|
+| Null | `null_not_allowed` (1.0), `rare_null` (0.15) |
+| Numeric | `extreme_outlier` (0.7), `strong_outlier` (0.35), `parse_fail` (0.3), `moderate_outlier` (0.1), `outside_p01_p99` (0.1) |
+| Categorical | `unseen_value` (0.35), `rare_value` (0.25), `unseen_value_high_cardinality` (0.1), `low_frequency` (0.1) |
+| Text | `shape_violation` (0.5), `length_anomaly` (0.25), `unseen_shape` (0.1), `rare_shape` (0.1), `length_deviation` (0.1), `unseen_shape_soft` (0.05) |
+| Datetime | `unexpected_future` (0.5), `far_before_historical_min` (0.35), `parse_fail` (0.3), `far_after_historical_max` (0.2), `rare_future` (0.2), `before_historical_min` (0.1), `after_historical_max` (0.1) |
+| Boolean | `unexpected_false` (0.4), `unexpected_true` (0.4), `rare_false` (0.2), `rare_true` (0.2) |
+
 ### Scoring
-
-Each column type has its own scorer:
-
-- **Numeric**: Z-score using IQR-based spread. Values within p01–p99 are capped at 0.1 regardless of Z-score to avoid false positives on tight-IQR sentinel codes.
-- **Categorical**: unseen values score 0.35 (low-cardinality) or 0.1 (high-cardinality). Rare known values (< 0.1%) score 0.25.
-- **Text/Structured**: length deviation + shape pattern scoring. Dominant-format columns score unseen shapes at 0.5.
-- **Null**: unexpected nulls score 1.0 (not nullable column) or 0.15 (nullable but null rate < 1%).
 
 Row score combines column scores probabilistically:
 
 ```
-row_score = 1 - ∏(1 - col_score_i)   for all col_score_i >= 0.15
+row_score = 1 - ∏(1 - col_score_i)   for all col_score_i >= MIN_CONTRIBUTION (0.15)
 ```
 
-Scores below 0.15 are recorded in details but don't accumulate into the row score.
+Scores below `MIN_CONTRIBUTION` are recorded in details but don't accumulate into the row score. Rows with `row_score >= ROW_SCORE_THRESHOLD` are written to `validity_anomaly_rows`.
 
 ### Column Filter
 
 Columns are skipped from scoring (configurable via `.env`) when:
 - Type is `identifier` — high-cardinality keys, almost always "unseen"
-- Type is `free_text` — unstructured, scoring is meaningless
-- Distinct ratio ≥ 98% — effectively unique per row
-- Null rate ≥ 98% — mostly empty
+- Type is `free_text` — unstructured, scoring is not meaningful
+- Distinct ratio ≥ `HIGH_CARDINALITY_THRESHOLD` — effectively unique per row
+- Null rate ≥ `HIGH_NULL_THRESHOLD` — mostly empty
 - Name matches a hint in `SKIP_COLUMN_HINTS`
 
 ### Performance
 
 Scoring uses a two-pass approach:
-- **Pass 1** (vectorized): score all rows for all eligible columns at once using pandas/numpy — no Python-level row loop
+- **Pass 1** (vectorized): score all rows for all eligible columns using pandas/numpy — no Python-level row loop
 - **Pass 2** (detail): run the per-row scorer only for flagged rows to collect human-readable reasons
 
 ---
@@ -305,7 +392,7 @@ On each run for a table:
 5. Fallback: flag if single-step change ≥ 50% when baseline is thin (< 3 snapshots) or has zero variance
 6. Save result to `dbo.row_count_runs` and append new snapshot
 
-The adaptive window means normal organic growth is absorbed — only sudden aggressive changes are flagged.
+The adaptive baseline means normal organic growth is absorbed — only sudden aggressive changes are flagged.
 
 ---
 
