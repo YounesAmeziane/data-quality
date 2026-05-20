@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
@@ -10,9 +11,10 @@ from sqlalchemy import text
 
 load_dotenv()
 
-_JOB_DB    = os.getenv("JOB_QUEUE_DATABASE", "hrdm_dev")
-_JOB_TABLE = "dbo.ai_scan"
+_JOB_DB        = os.getenv("JOB_QUEUE_DATABASE", "hrdm_dev")
+_JOB_TABLE     = "dbo.ai_scan"
 _POLL_INTERVAL = 1  # seconds
+_WORKERS       = int(os.getenv("RUNNER_WORKERS", "1"))
 
 
 # ---------------------------------------------------------------------------
@@ -92,32 +94,36 @@ def _log(msg: str) -> None:
         f.write(line + "\n")
 
 
+def _process_job(job: tuple) -> None:
+    job_id, scan_type, scan, table_name = job
+    _log(f"[JOB {job_id}] started — scan_type={scan_type} scan={scan} table_name={table_name}")
+    try:
+        _dispatch(scan_type, scan, table_name or None, job_id=job_id)
+        _mark_done(job_id)
+        _log(f"[JOB {job_id}] done")
+    except Exception as exc:
+        error_msg = traceback.format_exc()
+        _mark_failed(job_id, error=error_msg)
+        _log(f"[JOB {job_id}] failed: {exc}\n{error_msg}")
+
+
 def main() -> None:
-    _log(f"Runner started — polling {_JOB_DB}.{_JOB_TABLE} every {_POLL_INTERVAL}s")
+    _log(f"Runner started — {_WORKERS} worker(s) polling {_JOB_DB}.{_JOB_TABLE} every {_POLL_INTERVAL}s")
 
-    while True:
-        try:
-            job = _claim_job()
-        except Exception as exc:
-            _log(f"ERROR claiming job: {exc}\n{traceback.format_exc()}")
-            time.sleep(5)
-            continue
+    with ThreadPoolExecutor(max_workers=_WORKERS) as pool:
+        while True:
+            try:
+                job = _claim_job()
+            except Exception as exc:
+                _log(f"ERROR claiming job: {exc}\n{traceback.format_exc()}")
+                time.sleep(5)
+                continue
 
-        if job is None:
-            time.sleep(_POLL_INTERVAL)
-            continue
+            if job is None:
+                time.sleep(_POLL_INTERVAL)
+                continue
 
-        job_id, scan_type, scan, table_name = job
-        _log(f"[JOB {job_id}] scan_type={scan_type} scan={scan} table_name={table_name}")
-
-        try:
-            _dispatch(scan_type, scan, table_name or None, job_id=job_id)
-            _mark_done(job_id)
-            _log(f"[JOB {job_id}] done")
-        except Exception as exc:
-            error_msg = traceback.format_exc()
-            _mark_failed(job_id, error=error_msg)
-            _log(f"[JOB {job_id}] failed: {exc}\n{error_msg}")
+            pool.submit(_process_job, job)
 
 
 if __name__ == "__main__":
