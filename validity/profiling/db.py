@@ -75,7 +75,10 @@ def read_table_sample(
     sample_rows: int = 50_000,
 ) -> pd.DataFrame:
     engine = get_engine(database)
-    query = f"SELECT TOP ({sample_rows}) * FROM [{schema_name}].[{table_name}]"
+    if sample_rows and sample_rows > 0:
+        query = f"SELECT TOP ({sample_rows}) * FROM [{schema_name}].[{table_name}]"
+    else:
+        query = f"SELECT * FROM [{schema_name}].[{table_name}]"
     with engine.connect() as conn:
         df = pd.read_sql(text(query), conn)
     return df

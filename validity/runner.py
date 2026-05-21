@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import re
+import traceback
+from datetime import datetime, timezone
 
 from validity.profiling.db import (
     get_database_list,
@@ -11,6 +13,14 @@ from validity.profiling.db import (
 )
 from validity.profiling.profiler import profile_table, save_profiles_to_db
 from validity.scanning.table_scanner import save_scan_results, scan_table
+
+
+def _log(msg: str) -> None:
+    line = f"[{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
+    print(line)
+    log_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "runner.log"))
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
 
 
 def run(scan: str | None, table_name: str | None = None, job_id: int | None = None, **_) -> None:
@@ -87,28 +97,33 @@ def _run_profile(target: dict) -> None:
     try:
         tables = _iter_tables(target)
     except Exception as exc:
-        print(f"[ERROR] Could not resolve target: {exc}")
-        return
+        raise RuntimeError(f"Could not resolve target: {exc}") from exc
 
+    errors = []
     current_db = None
     for database_name, schema_name, table_name in tables:
         if database_name != current_db:
             current_db = database_name
-            print(f"\n=== PROFILING DATABASE: {database_name} ===")
+            _log(f"=== PROFILING DATABASE: {database_name} ===")
 
-        print(f"  Profiling [{database_name}].[{schema_name}].[{table_name}]")
+        _log(f"Profiling [{database_name}].[{schema_name}].[{table_name}]")
         try:
             df = read_table_sample(database_name, schema_name, table_name, sample_rows)
             if df.empty:
-                print("    -> skipped (empty sample)")
+                _log(f"  -> skipped (empty table)")
                 continue
 
             table_metadata = get_table_column_metadata(database_name, schema_name, table_name)
             profiles       = profile_table(df, database_name, schema_name, table_name, table_metadata)
             save_profiles_to_db(profiles, database_name, schema_name, table_name)
-            print(f"    -> {len(profiles)} columns profiled, saved to DB")
+            _log(f"  -> {len(profiles)} columns profiled, saved to DB")
         except Exception as exc:
-            print(f"    -> [ERROR] {exc}")
+            msg = f"[{database_name}].[{schema_name}].[{table_name}]: {exc}\n{traceback.format_exc()}"
+            _log(f"  -> [ERROR] {msg}")
+            errors.append(msg)
+
+    if errors:
+        raise RuntimeError("Profile errors:\n" + "\n".join(errors))
 
 
 # ---------------------------------------------------------------------------
@@ -122,28 +137,33 @@ def _run_scan(target: dict, job_id: int | None = None) -> None:
     try:
         tables = _iter_tables(target)
     except Exception as exc:
-        print(f"[ERROR] Could not resolve target: {exc}")
-        return
+        raise RuntimeError(f"Could not resolve target: {exc}") from exc
 
+    errors = []
     current_db = None
     for database_name, schema_name, table_name in tables:
         if database_name != current_db:
             current_db = database_name
-            print(f"\n=== SCANNING DATABASE: {database_name} ===")
+            _log(f"=== SCANNING DATABASE: {database_name} ===")
 
-        print(f"  Scanning [{database_name}].[{schema_name}].[{table_name}]")
+        _log(f"Scanning [{database_name}].[{schema_name}].[{table_name}]")
         try:
             result = scan_table(
                 database_name, schema_name, table_name,
                 sample_rows, row_score_threshold,
             )
             run_id = save_scan_results(result, job_id=job_id)
-            print(
-                f"    -> {result['row_count_scanned']} rows scanned, "
+            _log(
+                f"  -> {result['row_count_scanned']} rows scanned, "
                 f"{result['flagged_row_count']} flagged "
                 f"({result['flagged_rate']:.1%}) — run_id={run_id}"
             )
         except FileNotFoundError as exc:
-            print(f"    -> [SKIPPED] No profile in DB: {exc}")
+            _log(f"  -> [SKIPPED] No profile for [{database_name}].[{schema_name}].[{table_name}]")
         except Exception as exc:
-            print(f"    -> [ERROR] {exc}")
+            msg = f"[{database_name}].[{schema_name}].[{table_name}]: {exc}\n{traceback.format_exc()}"
+            _log(f"  -> [ERROR] {msg}")
+            errors.append(msg)
+
+    if errors:
+        raise RuntimeError("Scan errors:\n" + "\n".join(errors))
