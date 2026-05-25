@@ -40,7 +40,7 @@ def _load_snapshots(db_name: str, table_name: str) -> list[int]:
         rows = conn.execute(
             text("""
                 SELECT TOP (:window) row_count
-                FROM dbo.row_count_snapshots
+                FROM dm_dq.row_count_snapshots
                 WHERE db_name    = :db_name
                   AND table_name = :table_name
                 ORDER BY snapshotted_at DESC
@@ -59,7 +59,7 @@ def take_snapshot(database: str, schema: str, table: str) -> int:
     with engine.begin() as conn:
         conn.execute(
             text("""
-                INSERT INTO dbo.row_count_snapshots (db_name, table_name, row_count, snapshotted_at)
+                INSERT INTO dm_dq.row_count_snapshots (db_name, table_name, row_count, snapshotted_at)
                 VALUES (:db_name, :table_name, :row_count, :now)
             """),
             {
@@ -77,7 +77,7 @@ def save_run_result(result: dict[str, Any], job_id: int | None = None) -> None:
     with engine.begin() as conn:
         conn.execute(
             text("""
-                INSERT INTO dbo.row_count_runs
+                INSERT INTO dm_dq.row_count_runs
                     (job_id, db_name, table_name, row_count, previous_count,
                      change_pct, run_at, anomaly, z_score)
                 VALUES

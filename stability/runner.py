@@ -43,6 +43,20 @@ def _parse_target(table_name: str | None) -> dict:
     return {"mode": "db", "database": stripped}
 
 
+def _update_job_table_name(job_id: int | None, tables: list[tuple[str, str, str]]) -> None:
+    if job_id is None:
+        return
+    from validity.profiling.db import get_engine
+    from sqlalchemy import text
+    metadata_db = os.getenv("METADATA_DATABASE", "MetadataRepository")
+    engine      = get_engine(metadata_db)
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE dm_dq.scan_queue SET table_name = 'tables_in_target' WHERE job_id = :id"),
+            {"id": job_id},
+        )
+
+
 def _load_targets(db_filter: str | None = None) -> list[tuple[str, str, str]]:
     """Load enabled rows from dm_dq.stability_targets, optionally filtered by db."""
     from validity.profiling.db import get_engine
@@ -82,6 +96,8 @@ def _run_snapshot(target: dict, job_id: int | None = None) -> None:
     except Exception as exc:
         raise RuntimeError(f"Could not resolve target: {exc}") from exc
 
+    _update_job_table_name(job_id, tables)
+
     errors = []
     current_db = None
     for database_name, schema_name, table_name in tables:
@@ -113,6 +129,8 @@ def _run_check(target: dict, job_id: int | None = None) -> None:
         tables = _iter_tables(target)
     except Exception as exc:
         raise RuntimeError(f"Could not resolve target: {exc}") from exc
+
+    _update_job_table_name(job_id, tables)
 
     errors = []
     current_db = None
