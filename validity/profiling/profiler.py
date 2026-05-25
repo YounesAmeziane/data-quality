@@ -277,24 +277,23 @@ def save_profiles_to_db(
     profile_json    = json.dumps(payload, ensure_ascii=False)
     qualified_table = f"{schema_name}.{table_name}"
 
-    # last_profile is a SQL Server timestamp/rowversion column — it is auto-managed
-    # by the engine and must never appear in INSERT or UPDATE statements.
     upsert = text("""
         MERGE dbo.profiles AS target
-        USING (VALUES (:db_name, :tbl_name, :profile))
-            AS source (db_name, table_name, profile)
+        USING (VALUES (:db_name, :tbl_name, :profile, :profiled_at))
+            AS source (db_name, table_name, profile, last_profile)
         ON  target.db_name    = source.db_name
         AND target.table_name = source.table_name
         WHEN MATCHED THEN
-            UPDATE SET profile = source.profile
+            UPDATE SET profile = source.profile, last_profile = source.last_profile
         WHEN NOT MATCHED THEN
-            INSERT (db_name, table_name, profile)
-            VALUES (source.db_name, source.table_name, source.profile);
+            INSERT (db_name, table_name, profile, last_profile)
+            VALUES (source.db_name, source.table_name, source.profile, source.last_profile);
     """)
 
     with engine.begin() as conn:
         conn.execute(upsert, {
-            "db_name":  database_name,
-            "tbl_name": qualified_table,
-            "profile":  profile_json,
+            "db_name":     database_name,
+            "tbl_name":    qualified_table,
+            "profile":     profile_json,
+            "profiled_at": datetime.now(timezone.utc),
         })

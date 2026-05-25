@@ -127,7 +127,7 @@ def save_scan_results(scan_result: dict[str, Any], job_id: int | None = None) ->
     with engine.begin() as conn:
         row = conn.execute(
             text("""
-                INSERT INTO dbo.validity_scan_runs
+                INSERT INTO dm_dq.validity_scan_summary
                     (job_id, db_name, table_name, scanned_at, threshold, rows_scanned, rows_flagged, flagged_rate)
                 OUTPUT INSERTED.id
                 VALUES (:job_id, :db_name, :table_name, :scanned_at, :threshold,
@@ -149,7 +149,7 @@ def save_scan_results(scan_result: dict[str, Any], job_id: int | None = None) ->
         for flagged_row in scan_result.get("flagged_rows", []):
             anomaly_row = conn.execute(
                 text("""
-                    INSERT INTO dbo.validity_anomaly_rows (job_id, run_id, row_index, row_score, row_data)
+                    INSERT INTO dm_dq.validity_scan_row_data (job_id, run_id, row_index, row_score, row_data)
                     OUTPUT INSERTED.id
                     VALUES (:job_id, :run_id, :row_index, :row_score, :row_data)
                 """),
@@ -166,7 +166,7 @@ def save_scan_results(scan_result: dict[str, Any], job_id: int | None = None) ->
             for detail in flagged_row.get("details", []):
                 conn.execute(
                     text("""
-                        INSERT INTO dbo.validity_anomaly_details
+                        INSERT INTO dm_dq.validity_scan_result
                             (job_id, anomaly_row_id, column_name, column_score, reasons)
                         VALUES (:job_id, :anomaly_row_id, :column_name, :column_score, :reasons)
                     """),
