@@ -11,8 +11,8 @@ from sqlalchemy import text
 
 load_dotenv()
 
-_JOB_DB        = os.getenv("JOB_QUEUE_DATABASE", "hrdm_dev")
-_JOB_TABLE     = "dbo.ai_scan"
+_JOB_DB        = os.getenv("JOB_QUEUE_DATABASE", "MetadataRepository")
+_JOB_TABLE     = "dm_dq.scan_queue"
 _POLL_INTERVAL = 1  # seconds
 _WORKERS       = int(os.getenv("RUNNER_WORKERS", "1"))
 
