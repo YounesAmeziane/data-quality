@@ -164,18 +164,22 @@ def save_scan_results(scan_result: dict[str, Any], job_id: int | None = None) ->
             anomaly_row_id = anomaly_row[0]
 
             for detail in flagged_row.get("details", []):
+                raw_val = flagged_row["row_data"].get(detail["column"])
+                col_val = None if raw_val is None else str(raw_val)
                 conn.execute(
                     text("""
                         INSERT INTO dm_dq.validity_scan_result
-                            (job_id, anomaly_row_id, column_name, column_score, reasons)
-                        VALUES (:job_id, :anomaly_row_id, :column_name, :column_score, :reasons)
+                            (job_id, anomaly_row_id, row_index, column_name, column_score, reasons, column_value)
+                        VALUES (:job_id, :anomaly_row_id, :row_index, :column_name, :column_score, :reasons, :column_value)
                     """),
                     {
                         "job_id":         job_id,
                         "anomaly_row_id": anomaly_row_id,
+                        "row_index":      flagged_row["row_index"],
                         "column_name":    detail["column"],
                         "column_score":   detail["score"],
                         "reasons":        ", ".join(detail.get("reasons", [])),
+                        "column_value":   col_val,
                     },
                 )
 
