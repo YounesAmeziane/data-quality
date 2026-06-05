@@ -74,7 +74,8 @@ def _dispatch(scan_type: str, scan: str, table_name: str | None, job_id: int) ->
         from validity.runner import run
         run(scan=scan, table_name=table_name, job_id=job_id)
     elif scan_type == "consistency":
-        raise NotImplementedError("Consistency module not yet implemented.")
+        from consistency.runner import run
+        run(scan=scan, table_name=table_name, job_id=job_id)
     elif scan_type == "stability":
         from stability.runner import run
         run(scan=scan, table_name=table_name, job_id=job_id)
