@@ -39,16 +39,17 @@ def _run_cross_system(table_name: str | None, job_id: int | None = None) -> None
         raise ValueError("table_name is required. Format: [db].[schema].[table1]|[db].[schema].[table2]|join_key")
 
     parts = [p.strip() for p in table_name.split("|")]
-    if len(parts) < 3:
+    if len(parts) < 2:
         raise ValueError(
-            f"table_name must be '[db].[schema].[table1]|[db].[schema].[table2]|join_key'. Got: '{table_name}'"
+            f"table_name must be '[db].[schema].[table1]|[db].[schema].[table2]' or add '|join_key' for keyed comparison. Got: '{table_name}'"
         )
 
     source_db, source_schema, source_table = _parse_table_path(parts[0])
     target_db, target_schema, target_table = _parse_table_path(parts[1])
-    join_key = parts[2]
+    join_key = parts[2] if len(parts) >= 3 else None
 
-    _log(f"Cross-system consistency: [{source_db}].[{source_schema}].[{source_table}] vs [{target_db}].[{target_schema}].[{target_table}] on key '{join_key}'")
+    key_info = f"on key '{join_key}'" if join_key else "keyless (full row hash)"
+    _log(f"Cross-system consistency: [{source_db}].[{source_schema}].[{source_table}] vs [{target_db}].[{target_schema}].[{target_table}] — {key_info}")
 
     try:
         result = compare_tables(
