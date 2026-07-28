@@ -157,14 +157,17 @@ Central job queue. Insert a row to trigger any scan.
 ### Validity
 
 #### `dbo.profiles`
-Statistical profile per column, stored as a JSON blob. Upserted on every profiling run.
+Statistical profile per column, stored as a JSON blob. Every profiling run inserts a new row; previous rows are retained as history with `isCurrent = 0`.
 
 | Column | Type | Notes |
 |---|---|---|
 | db_name | nvarchar | Source database name |
 | table_name | nvarchar | `schema.table` format |
 | profile | nvarchar(max) | JSON — all column profiles |
-| last_profile | datetime2 | UTC timestamp of last profile run |
+| last_profile | datetime2 | UTC timestamp of this profile run |
+| isCurrent | bit | `1` for the active profile, `0` for historical versions |
+
+To query only the active profile add `WHERE isCurrent = 1`. Historical rows are kept indefinitely and can be used to audit how a table's statistical baseline has changed over time.
 
 #### `dm_dq.validity_scan_summary`
 One row per table per scan job.
@@ -223,7 +226,7 @@ Registry of tables to monitor. Add a row per table — set `enabled = 0` to paus
 | enabled | bit | 1 = active |
 | added_at | datetime2 | |
 
-#### `dbo.row_count_snapshots`
+#### `dm_dq.row_count_snapshots`
 Historical row count log. The rolling baseline is built from this.
 
 | Column | Type | Notes |
@@ -265,7 +268,7 @@ One row per cross-system comparison job.
 | source_table | nvarchar | `schema.table` format |
 | target_db | nvarchar | |
 | target_table | nvarchar | `schema.table` format |
-| join_key | nvarchar | Column used to match rows |
+| join_key | nvarchar, nullable | Column used to match rows; `NULL` if run in keyless (full-row-hash) mode |
 | scanned_at | datetime2 | |
 | source_count | bigint | Row count in source |
 | target_count | bigint | Row count in target |
@@ -281,11 +284,11 @@ One row per discrepancy (missing row, extra row, or differing cell).
 | id | int PK | |
 | run_id | int | Links to `consistency_runs.id` |
 | job_id | int | Links to `dm_dq.scan_queue` |
-| join_key_value | nvarchar | The key value of the affected row |
-| issue_type | nvarchar | `missing` / `extra` / `modified` |
-| column_name | nvarchar | NULL for missing/extra rows |
-| source_value | nvarchar(max) | |
-| target_value | nvarchar(max) | |
+| join_key_value | nvarchar | The key value of the affected row (keyed mode); empty string in keyless mode |
+| issue_type | nvarchar | `missing` / `extra` / `modified` (`modified` only occurs in keyed mode) |
+| column_name | nvarchar | The differing column (keyed `modified` rows only); `NULL` otherwise |
+| source_value | nvarchar(max) | A single cell value (keyed mode) or the full row as JSON (keyless `missing` rows) |
+| target_value | nvarchar(max) | Same conventions as `source_value`, for the target side |
 
 ---
 
@@ -418,7 +421,7 @@ GRANT SELECT, INSERT, UPDATE ON dbo.profiles   TO [ai_user];
 
 Two phases per table:
 
-**1. Profile** — read the table (full scan or TOP N rows), compute statistical profiles per column, save to `dbo.profiles`.
+**1. Profile** — read the table (full scan or TOP N rows), compute statistical profiles per column, insert a new row into `dbo.profiles` (previous profiles for the same table are archived with `isCurrent = 0`).
 
 **2. Scan** — load profiles, score every row for anomalies using a two-pass vectorized approach, save flagged rows and column-level details to DB.
 
@@ -480,7 +483,7 @@ Scoring uses a two-pass approach:
 
 Two operations, run separately on a schedule:
 
-**1. Snapshot** (`scan = 'snapshot'`) — for every table registered in `dm_dq.stability_targets`, capture the current row count via `sys.partitions` (no full table scan) and write it to `dbo.row_count_snapshots`.
+**1. Snapshot** (`scan = 'snapshot'`) — for every table registered in `dm_dq.stability_targets`, capture the current row count via `sys.partitions` (no full table scan) and write it to `dm_dq.row_count_snapshots`.
 
 **2. Check** (`scan = 'check'`) — for every registered table, read the most recent snapshot, compare against the rolling baseline, flag anomalies, and write results to `dm_dq.row_count_runs`.
 
@@ -488,7 +491,7 @@ Snapshots run at **6:00 AM**, checks run at **8:00 AM** via Task Scheduler.
 
 ### Anomaly Detection
 
-1. Load the last 30 snapshots from `dbo.row_count_snapshots`
+1. Load the last 30 snapshots from `dm_dq.row_count_snapshots`
 2. Compute rolling mean and std dev of the history
 3. Flag if Z-score ≥ 3.0
 4. Fallback: flag if single-step change ≥ 50% when baseline is thin (< 3 snapshots) or has zero variance
@@ -518,21 +521,40 @@ Verifies that two tables across different databases or systems contain identical
 
 ### How It Works
 
-1. **Hash** — compute a SHA-256 hash per row on both sides in SQL (only `(key, hash)` pairs transferred over the network)
-2. **Diff** — compare hash sets to find missing rows, extra rows, and modified rows
+Two modes, depending on whether the table has a usable key column:
+
+**Keyed mode** (join key provided) — rows are matched across systems by key, so individual changed cells can be identified:
+1. **Hash** — compute a SHA-256 hash of all non-key columns per row on both sides in SQL (only `(key, hash)` pairs transferred over the network)
+2. **Diff** — compare hash sets by key to find missing rows, extra rows, and modified rows
 3. **Detail** — for modified rows only, fetch the actual data and compare column by column to identify exactly which cells differ
 
-Up to 10,000 modified rows are stored in detail. The summary counts are always complete.
+**Keyless mode** (no join key — e.g. staging tables with no PK/unique column) — rows are matched by hashing the *entire* row:
+1. **Hash** — compute a SHA-256 hash of every column per row on both sides
+2. **Diff** — compare the two multisets of hashes (duplicate rows are handled via counts, not just set membership) to find missing and extra rows
+3. There is no "modified" category in keyless mode — a changed cell just makes that row look like one row missing + one row extra
+
+Up to 10,000 discrepancy rows are stored in detail. The summary counts in `consistency_runs` are always complete even if detail is capped.
 
 ### Triggering a Check
 
 ```sql
+-- Keyed — matches rows by key, can detect single-cell changes
 -- Format: [source_db].[schema].[table]|[target_db].[schema].[table]|join_key_column
 INSERT INTO MetadataRepository.dm_dq.scan_queue (scan_type, scan, table_name, status)
 VALUES (
     'consistency',
     'cross_system',
     '[HRDM_DEV].[dbo].[Employee]|[STG].[dbo].[Employee]|EmployeeKey',
+    'pending'
+)
+
+-- Keyless — no unique column needed, compares whole rows
+-- Format: [source_db].[schema].[table]|[target_db].[schema].[table]
+INSERT INTO MetadataRepository.dm_dq.scan_queue (scan_type, scan, table_name, status)
+VALUES (
+    'consistency',
+    'cross_system',
+    '[ODS].[sysOptKPI].[_stageEspProdHrs]|[STG].[sysOptKPI].[_stageEspProdHrs]',
     'pending'
 )
 ```
